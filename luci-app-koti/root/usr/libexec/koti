@@ -2,7 +2,7 @@
 
 . /lib/functions.sh
 
-redirect_dns() {
+dns() {
     if test -e /var/koti-redirect-dns-undo; then
         . /var/koti-redirect-dns-undo >/dev/null 2>&1
         rm /var/koti-redirect-dns-undo
@@ -22,6 +22,7 @@ EOF
 }
 
 _add_dns_server_to_list() {
+    printf "Redirect DNS traffic to %s\n" "$1" >&2
     uci add_list dhcp.@dnsmasq[0].server="$1"
     echo "uci del_list dhcp.@dnsmasq[0].server=\"$1\"" >>/var/koti-redirect-dns-undo
 }
@@ -45,13 +46,22 @@ _allow_dns_server() {
     iptables -t nat -A koti-dns-output -d "$1" -p "$protocol" --dport "$port" -j ACCEPT
 }
 
+dnssec() {
+    uci set dhcp.@dnsmasq[0].dnssec="$dnssec_enable"
+    uci set dhcp.@dnsmasq[0].dnsseccheckunsigned="$dnssec_enable"
+    case "$dnssec_enable" in
+    1) printf "Enable DNSSEC\n" >&2 ;;
+    0) printf "Disable DNSSEC\n" >&2 ;;
+    esac
+}
+
 config_load network
 config_get lan_ipaddr lan ipaddr 192.168.1.1
 config_get lan_netmask lan netmask 255.255.255.0
 config_load koti
 config_get dns_enable dns enable 1
+config_get dnssec_enable dnssec enable 1
 lan_network="$lan_ipaddr/$lan_netmask"
-printf 'DNS: %s\n' "$dns_enable"
-printf 'LAN ipaddr: %s\n' "$lan_ipaddr"
-printf 'LAN netmask: %s\n' "$lan_netmask"
-redirect_dns
+dns
+dnssec
+uci commit dhcp
