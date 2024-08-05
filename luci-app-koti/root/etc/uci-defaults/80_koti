@@ -1,0 +1,9 @@
+#!/bin/sh
+
+touch /etc/config/koti
+uci set koti.dns='dns'
+uci set koti.dns.enable='1'
+uci add_list koti.dns.server='9.9.9.9'
+uci commit koti
+
+return 0

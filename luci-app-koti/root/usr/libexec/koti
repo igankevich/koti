@@ -1,0 +1,57 @@
+#!/bin/sh
+
+. /lib/functions.sh
+
+redirect_dns() {
+    if test -e /var/koti-redirect-dns-undo; then
+        . /var/koti-redirect-dns-undo >/dev/null 2>&1
+        rm /var/koti-redirect-dns-undo
+    fi
+    if test "$dns_enable" = 1; then
+        cat >/var/koti-redirect-dns-undo <<'EOF'
+iptables -t nat -D PREROUTING -j koti-dns-prerouting
+iptables -t nat -F koti-dns-prerouting
+iptables -t nat -X koti-dns-prerouting
+iptables -t nat -D OUTPUT -j koti-dns-output
+iptables -t nat -F koti-dns-output
+iptables -t nat -X koti-dns-output
+EOF
+        redirect_port 53 dns
+        config_list_foreach dns server _add_dns_server_to_list
+    fi
+}
+
+_add_dns_server_to_list() {
+    uci add_list dhcp.@dnsmasq[0].server="$1"
+    echo "uci del_list dhcp.@dnsmasq[0].server=\"$1\"" >>/var/koti-redirect-dns-undo
+}
+
+redirect_port() {
+    port="$1"
+    name="$2"
+    iptables -t nat -N koti-"$name"-prerouting
+    iptables -t nat -A PREROUTING -j koti-"$name"-prerouting
+    iptables -t nat -N koti-"$name"-output
+    iptables -t nat -A OUTPUT -j koti-"$name"-output
+    for protocol in udp tcp; do
+        iptables -t nat -A koti-"$name"-prerouting ! -d $lan_network -p $protocol --dport $port -j DNAT --to-destination $lan_ipaddr:$port
+        config_list_foreach dns server _allow_dns_server
+        iptables -t nat -A koti-"$name"-output -d $lan_network -p $protocol --dport $port -j ACCEPT
+        iptables -t nat -A koti-"$name"-output -p $protocol --dport $port -j DNAT --to-destination $lan_ipaddr:$port
+    done
+}
+
+_allow_dns_server() {
+    iptables -t nat -A koti-dns-output -d "$1" -p "$protocol" --dport "$port" -j ACCEPT
+}
+
+config_load network
+config_get lan_ipaddr lan ipaddr 192.168.1.1
+config_get lan_netmask lan netmask 255.255.255.0
+config_load koti
+config_get dns_enable dns enable 1
+lan_network="$lan_ipaddr/$lan_netmask"
+printf 'DNS: %s\n' "$dns_enable"
+printf 'LAN ipaddr: %s\n' "$lan_ipaddr"
+printf 'LAN netmask: %s\n' "$lan_netmask"
+redirect_dns

@@ -42,13 +42,30 @@ configure_sh() {
 export PS1='router 🔥 '
 EOF
     rm -f /etc/banner
-    # silence "no password" warning
-    sed -i 's/root::/root:*:/' /etc/shadow
+    # password 'root'
+    sed -i 's|^root::.*$|root:$1$MFhaa2d3$izzB9koiCjBSoqMbRsAni/:19940:0:99999:7:::|' /etc/shadow
+}
+
+configure_dnsmasq() {
+    cat >>/etc/dnsmasq.conf <<'EOF'
+server = 9.9.9.9
+EOF
+cat > /etc/resolv.conf <<'EOF'
+nameserver 9.9.9.9
+EOF
+}
+
+install_koti() {
+    cp -r src/luci-app-koti/root/* /
+    cp -r src/luci-app-koti/htdocs/* /www/
+    /etc/uci-defaults/80_koti
 }
 
 set -e
 configure_network_devices
 configure_default_route
+configure_dnsmasq
 configure_sh
+install_koti
 wait_for_br_lan
 exec "$@"
