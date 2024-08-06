@@ -23,6 +23,8 @@ configure_default_route() {
     cat >/etc/uci-defaults/99-z-docker <<'EOF'
 uci set network.wan.gateway=10.75.0.1
 uci commit network
+uci set system.@system[0].timezone="Europe/Berlin"
+uci commit system
 EOF
     ip route delete default || true
 }
@@ -35,7 +37,7 @@ while ! ip link show br-lan >/dev/null 2>/dev/null; do
     sleep 1
 done
 logread -e koti
-dig +short igankevich.com
+#dig +short igankevich.com
 EOF
 }
 

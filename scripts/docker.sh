@@ -26,6 +26,7 @@ client)
         --rm \
         --cap-add NET_ADMIN \
         --cap-add SYS_ADMIN \
+        --cap-add SYS_TIME \
         --security-opt seccomp=unconfined \
         --network "$lan" \
         --ip 10.107.1.2 \
@@ -46,6 +47,7 @@ router | *)
         --rm \
         --cap-add NET_ADMIN \
         --cap-add SYS_ADMIN \
+        --cap-add SYS_TIME \
         --security-opt seccomp=unconfined \
         --network "$lan" \
         --ip 10.107.1.1 \
