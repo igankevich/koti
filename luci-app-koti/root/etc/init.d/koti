@@ -1,0 +1,16 @@
+#!/bin/sh /etc/rc.common
+
+START=18
+USE_PROCD=1
+
+service_triggers() {
+    procd_add_reload_trigger koti
+}
+
+start_service() {
+    /usr/libexec/koti
+}
+
+reload_service() {
+    start_service
+}

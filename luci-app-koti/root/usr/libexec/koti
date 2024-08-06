@@ -1,0 +1,156 @@
+#!/bin/sh
+
+. /lib/functions.sh
+
+redirect_dns() {
+    if test -e /var/koti-redirect-dns-undo; then
+        set +e
+        . /var/koti-redirect-dns-undo >/dev/null 2>&1
+        set -e
+        rm /var/koti-redirect-dns-undo
+    fi
+    if test "$dns_enable" = 1; then
+        cat >/var/koti-redirect-dns-undo <<'EOF'
+nft delete table inet koti
+EOF
+        redirect_port 53
+    fi
+}
+
+redirect_port() {
+    # https://en.wikipedia.org/wiki/Private_network
+    local_networks="{ 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }"
+    port="$1"
+    nft -f- <<EOF
+table inet koti {
+    chain prerouting {
+        type nat hook prerouting priority dstnat;
+        policy accept;
+        meta l4proto { udp, tcp } th dport $port ip daddr != $local_networks redirect to $port
+    }
+    chain output {
+        type nat hook output priority -100;
+        policy accept;
+        meta l4proto { udp, tcp } th dport $port ip daddr != $local_networks redirect to $port
+    }
+}
+EOF
+}
+
+dot() {
+    case "$dot_enable" in
+    1) printf "Enable DoT\n" >&2 ;;
+    0) printf "Disable DoT\n" >&2 ;;
+    esac
+    config_load unbound
+    config_foreach _disable_zone zone
+    if test "$dot_enable" = 1; then
+        config_load koti
+        config_list_foreach dot zone _enable_zone
+    fi
+}
+
+_disable_zone() {
+    if expr "$1" : "fwd_.*$" >/dev/null; then
+        printf "disable zone %s\n" "$1" >&2
+        uci set unbound."$1".enabled=0
+        uci set unbound."$1".fallback=0
+    fi
+}
+
+_enable_zone() {
+    printf "enable zone %s\n" "$1" >&2
+    uci set unbound."$1".enabled=1
+}
+
+dnssec() {
+    uci set unbound.ub_main.validator="$dnssec_enable"
+    case "$dnssec_enable" in
+    1) printf "Enable DNSSEC\n" >&2 ;;
+    0) printf "Disable DNSSEC\n" >&2 ;;
+    esac
+}
+
+backup_file() {
+    if test -e "$1"; then
+        cp -n "$1" "$(dirname "$1")"/."$(basename "$1")"-pre-koti
+    fi
+}
+
+configure_dhcp() {
+    backup_file /etc/config/dhcp
+    domain="$(uci get dhcp.@dnsmasq[0].domain)"
+    for server in $(uci get dhcp.@dnsmasq[0].server 2>/dev/null || true); do
+        if ! expr "$server" : "/.*/.*" >/dev/null; then
+            uci del_list dhcp.@dnsmasq[0].server="$server"
+        fi
+    done
+    uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$unbound_port"
+    uci add_list dhcp.@dnsmasq[0].server="::1#$unbound_port"
+}
+
+add_unbound_zone() {
+    name="$1"
+    tls_index="$2"
+    server="$3"
+    if ! uci -q get unbound."$name" >/dev/null; then
+        uci batch <<EOF
+set unbound.$name=zone
+set unbound.$name.enabled=0
+set unbound.$name.fallback=0
+set unbound.$name.tls_index=$tls_index
+set unbound.$name.tls_upstream=1
+set unbound.$name.zone_type=forward_zone
+add_list unbound.$name.zone_name=.
+EOF
+        for s in $server; do
+            uci add_list unbound.$name.server=$s
+        done
+    fi
+}
+
+configure_unbound() {
+    backup_file /etc/config/unbound
+    add_unbound_zone fwd_quad9_dns dns.quad9.net \
+        '9.9.9.9 149.112.112.112 2620:fe::fe 2620:fe::9'
+    add_unbound_zone fwd_quad9_dns11 dns11.quad9.net \
+        '9.9.9.11 149.112.112.11 2620:fe::11 2620:fe::fe:11'
+    if test -n "$nextdns_id"; then
+        add_unbound_zone fwd_nextdns "$nextdns_id.dns.nextdns.io" \
+            '45.90.28.0 45.90.30.0 2a07:a8c0::0 2a07:a8c1::0'
+    fi
+    uci batch <<EOF
+set unbound.ub_main.listen_port=$unbound_port
+set unbound.ub_main.validator=1
+set unbound.ub_main.add_local_fqdn=0
+set unbound.ub_main.add_wan_fqdn=0
+set unbound.ub_main.dhcp_link=none
+set unbound.ub_main.domain=$domain
+set unbound.ub_main.domain_type=refuse
+EOF
+}
+
+change_service() {
+    service="$1"
+    changes="$(uci changes "$service")"
+    uci commit dhcp
+    if test -n "$changes"; then
+        ubus call service event \
+            '{"type":"config.change","data":{"package":"'"$service"'"}}'
+    fi
+}
+
+set -e
+config_load koti
+config_get unbound_port main unbound_port
+config_get nextdns_id main nextdns_id
+config_get dns_enable dns enable 1
+config_get dnssec_enable dnssec enable 1
+config_get dot_enable dot enable 1
+redirect_dns
+configure_unbound
+dot
+dnssec
+configure_dhcp
+change_service dhcp
+change_service unbound
