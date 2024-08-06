@@ -3,19 +3,12 @@
     "title": "Koti",
     "order": 60,
     "action": {
-      "type": "firstchild"
+      "type": "view",
+      "path": "koti"
     },
     "depends": {
       "acl": [ "luci-app-koti" ]
     }
-  },
-
-  "admin/koti/dns": {
-    "title": "DNS",
-    "order": 1,
-    "action": {
-      "type": "view",
-      "path": "koti/dns"
-    }
   }
+
 }

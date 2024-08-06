@@ -5,7 +5,7 @@
 return view.extend({
 	render: function() {
 		var m, s, o;
-		m = new form.Map('koti', _('DNS'), _('DNS Configuration.'));
+		m = new form.Map('koti', _('Koti'));
 
 		s = m.section(form.TypedSection, 'dns', _('DNS'));
 		s.anonymous = true;
