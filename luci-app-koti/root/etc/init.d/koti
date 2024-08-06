@@ -1,6 +1,6 @@
 #!/bin/sh /etc/rc.common
 
-START=18
+START=13
 USE_PROCD=1
 
 service_triggers() {
@@ -8,7 +8,7 @@ service_triggers() {
 }
 
 start_service() {
-    /usr/libexec/koti
+    /usr/libexec/koti 2>&1 | logger -t koti -p daemon.info
 }
 
 reload_service() {

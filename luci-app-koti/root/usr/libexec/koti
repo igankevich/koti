@@ -2,17 +2,12 @@
 
 . /lib/functions.sh
 
+koti_undo() {
+    nft delete table inet koti 2>/dev/null || true
+}
+
 redirect_dns() {
-    if test -e /var/koti-redirect-dns-undo; then
-        set +e
-        . /var/koti-redirect-dns-undo >/dev/null 2>&1
-        set -e
-        rm /var/koti-redirect-dns-undo
-    fi
-    if test "$dns_enable" = 1; then
-        cat >/var/koti-redirect-dns-undo <<'EOF'
-nft delete table inet koti
-EOF
+    if test "$dot_enable" = 1; then
         redirect_port 53
     fi
 }
@@ -28,11 +23,11 @@ table inet koti {
         policy accept;
         meta l4proto { udp, tcp } th dport $port ip daddr != $local_networks redirect to $port
     }
-    chain output {
-        type nat hook output priority -100;
-        policy accept;
-        meta l4proto { udp, tcp } th dport $port ip daddr != $local_networks redirect to $port
-    }
+    #chain output {
+    #    type nat hook output priority -100;
+    #    policy accept;
+    #    meta l4proto { udp, tcp } th dport $port ip daddr != $local_networks redirect to $port
+    #}
 }
 EOF
 }
@@ -69,6 +64,27 @@ dnssec() {
     1) printf "Enable DNSSEC\n" >&2 ;;
     0) printf "Disable DNSSEC\n" >&2 ;;
     esac
+}
+
+nts() {
+    if test "$nts_enable" = 1; then
+        config_load koti
+        while uci -q delete chrony.@pool[-1]; do true; done
+        config_list_foreach nts server _add_nts_server
+        uci set system.ntp.enabled=0
+        redirect_port 123
+    fi
+    case "$nts_enable" in
+    1) printf "Enable NTS\n" >&2 ;;
+    0) printf "Disable NTS\n" >&2 ;;
+    esac
+}
+
+_add_nts_server() {
+    uci add chrony pool >/dev/null
+    uci set chrony.@pool[-1].hostname="$1"
+    uci set chrony.@pool[-1].iburst=1
+    uci set chrony.@pool[-1].nts=1
 }
 
 backup_file() {
@@ -130,27 +146,39 @@ set unbound.ub_main.domain_type=refuse
 EOF
 }
 
-change_service() {
-    service="$1"
-    changes="$(uci changes "$service")"
-    uci commit dhcp
+change_config() {
+    config="$1"
+    changes="$(uci changes "$config")"
+    uci commit "$config"
     if test -n "$changes"; then
-        ubus call service event \
-            '{"type":"config.change","data":{"package":"'"$service"'"}}'
+        case "$config" in
+        # no trigger
+        chrony)
+            if /etc/init.d/chronyd running; then
+                /etc/init.d/chronyd restart
+            fi
+            ;;
+        *)
+            ubus call service event '{"type":"config.change","data":{"package":"'"$config"'"}}'
+            ;;
+        esac
     fi
 }
 
 set -e
 config_load koti
-config_get unbound_port main unbound_port
+config_get unbound_port main unbound_port 1053
 config_get nextdns_id main nextdns_id
-config_get dns_enable dns enable 1
 config_get dnssec_enable dnssec enable 1
 config_get dot_enable dot enable 1
+config_get nts_enable nts enable 1
+koti_undo
 redirect_dns
 configure_unbound
 dot
 dnssec
+nts
 configure_dhcp
-change_service dhcp
-change_service unbound
+for config in dhcp unbound chrony system; do
+    change_config "$config"
+done
