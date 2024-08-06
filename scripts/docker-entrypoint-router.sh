@@ -34,6 +34,8 @@ while ! ip link show br-lan >/dev/null 2>/dev/null; do
     printf 'waiting for br-lan to appear...\n' >&2
     sleep 1
 done
+logread -e koti
+dig +short igankevich.com
 EOF
 }
 

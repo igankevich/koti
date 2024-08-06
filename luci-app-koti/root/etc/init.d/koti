@@ -7,10 +7,10 @@ service_triggers() {
     procd_add_reload_trigger koti
 }
 
-reload_service() {
-    start
-}
-
 start_service() {
     /usr/libexec/koti
+}
+
+reload_service() {
+    start_service
 }

@@ -41,6 +41,7 @@ router | *)
     trap cleanup EXIT
     docker network create --subnet="$lan_subnet" "$lan" >/dev/null
     docker network create --subnet="$wan_subnet" "$wan" >/dev/null
+    mkdir -p .root
     docker create \
         --rm \
         --cap-add NET_ADMIN \

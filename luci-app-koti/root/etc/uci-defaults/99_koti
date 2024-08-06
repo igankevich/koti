@@ -1,0 +1,24 @@
+#!/bin/sh
+
+uci -q delete ucitrack.@koti[-1] || true
+
+touch /etc/config/koti
+uci batch <<EOF
+set koti.dns=dns
+set koti.dns.enable=1
+set koti.dnssec=dnssec
+set koti.dnssec.enable=1
+set koti.dot=dot
+set koti.dot.enable=1
+set koti.main=main
+set koti.main.unbound_port=1053
+add_list koti.dot.zone=fwd_quad9_dns
+commit koti
+
+add ucitrack koti
+set ucitrack.@koti[-1].init=koti
+set ucitrack.@koti[-1].exec='/etc/init.d/koti reload'
+commit ucitrack
+EOF
+
+return 0
