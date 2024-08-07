@@ -1,21 +1,17 @@
 {
-  "luci-app-koti": {
-    "description": "Grant UCI and RPC access to LuCI app koti",
-    "read": {
-      "ubus": {
-        "luci.koti": [
-          "get_sample1",
-          "get_sample2"
-        ]
-      },
-      "uci": [
-        "koti"
-      ]
-    },
-    "write": {
-      "uci": [
-        "koti"
-      ]
+    "luci-app-koti": {
+        "description": "Grant UCI and RPC access to LuCI app koti",
+        "read": {
+            "ubus": {
+                "luci.koti": [
+                    "wgNewServer",
+                    "wgNewClient"
+                ]
+            },
+            "uci": ["koti"]
+        },
+        "write": {
+            "uci": ["koti"]
+        }
     }
-  }
 }

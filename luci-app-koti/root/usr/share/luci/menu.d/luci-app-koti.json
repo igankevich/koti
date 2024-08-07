@@ -1,14 +1,28 @@
 {
-  "admin/koti/": {
-    "title": "Koti",
-    "order": 60,
-    "action": {
-      "type": "view",
-      "path": "koti"
+    "admin/koti/": {
+        "title": "Koti",
+        "order": 60,
+        "action": {
+            "type": "firstchild"
+        },
+        "depends": {
+            "acl": ["luci-app-koti"]
+        }
     },
-    "depends": {
-      "acl": [ "luci-app-koti" ]
+    "admin/koti/security": {
+        "title": "Security",
+        "order": 1,
+        "action": {
+            "type": "view",
+            "path": "koti"
+        }
+    },
+    "admin/koti/wireguard": {
+        "title": "Remote access",
+        "order": 1,
+        "action": {
+            "type": "view",
+            "path": "wireguard"
+        }
     }
-  }
-
 }

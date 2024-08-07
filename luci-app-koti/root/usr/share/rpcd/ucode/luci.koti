@@ -1,0 +1,114 @@
+import { cursor } from 'uci';
+import { popen, readfile, unlink } from 'fs';
+import { rand } from 'math';
+
+function exec(command) {
+    const proc = popen(command);
+    const output = proc.read('all');
+    proc.close();
+    return trim(output);
+}
+
+function execWithInput(command, input) {
+    const filename = `/tmp/.exec-${rand()}`;
+    const proc = popen(command + ' > ' + filename, 'w');
+    proc.write(input);
+    proc.flush();
+    proc.close();
+    const output = readfile(filename);
+    unlink(filename);
+    return trim(output);
+}
+
+function notifyConfigChange(config) {
+    const message = {
+        type: 'config.change',
+        data: {
+            package: config,
+        },
+    };
+    exec("ubus call service event '" + message + "'");
+}
+
+function addToFirewall(uci, name, port) {
+    uci.load('firewall');
+    // zone
+    uci.foreach('firewall', 'zone', (zone) => {
+        if (zone.name == name) {
+            uci.delete('firewall', zone['.name']);
+        }
+    });
+    const zone = uci.add('firewall', 'zone');
+    uci.set('firewall', zone, 'name', name);
+    uci.set('firewall', zone, 'network', [name]);
+    uci.set('firewall', zone, 'input', 'ACCEPT');
+    uci.set('firewall', zone, 'output', 'ACCEPT');
+    uci.set('firewall', zone, 'forward', 'ACCEPT');
+    // rule
+    uci.delete('firewall', name);
+    uci.set('firewall', name, 'rule');
+    uci.set('firewall', name, 'name', 'Allow-WireGuard-' + name);
+    uci.set('firewall', name, 'src', 'wan');
+    uci.set('firewall', name, 'dest_port', port);
+    uci.set('firewall', name, 'proto', 'udp');
+    uci.set('firewall', name, 'target', 'ACCEPT');
+    uci.commit('firewall');
+    notifyConfigChange('firewall');
+}
+
+function addNetwork(uci, name, port, privateKey, ipaddr) {
+    uci.load('network');
+    uci.delete('network', name);
+    uci.set('network', name, 'interface');
+    uci.set('network', name, 'proto', 'wireguard');
+    uci.set('network', name, 'private_key', privateKey);
+    uci.set('network', name, 'listen_port', port);
+    uci.set('network', name, 'addresses', [ipaddr]);
+    uci.commit('network');
+    notifyConfigChange('network');
+}
+
+function randomPort() {
+    const MIN_PORT = 7000;
+    const MAX_PORT = 9999;
+    return MIN_PORT + (rand() % (MAX_PORT + 1 - MIN_PORT));
+}
+
+const methods = {
+    wgNewServer: {
+        args: {
+            name: 'wg',
+            ipaddr: '10.79.111.0/24',
+        },
+        call: function (request) {
+            // https://openwrt.org/docs/guide-user/services/vpn/wireguard/server
+            const uci = cursor();
+            const port = randomPort();
+            const name = request.args.name;
+            const privateKey = exec('wg genkey');
+            const publicKey = execWithInput('wg pubkey', privateKey);
+            const ipaddr = request.args.ipaddr;
+            addNetwork(uci, name, port, privateKey, ipaddr);
+            addToFirewall(uci, name, port);
+            return {
+                port: port,
+                privateKey: privateKey,
+                publicKey: publicKey,
+            };
+        },
+    },
+    wgNewClient: {
+        call: function () {
+            const privateKey = exec('wg genkey');
+            const publicKey = execWithInput('wg pubkey', privateKey);
+            const presharedKey = exec('wg genpsk');
+            return {
+                privateKey: privateKey,
+                publickey: publciKey,
+                presharedKey: presharedKey,
+            };
+        },
+    },
+};
+
+return { 'luci.koti': methods };

@@ -1,0 +1,8 @@
+{
+    "scripts": {
+        "prettier": "prettier --config .prettierrc --write luci-app-koti/ package.json"
+    },
+    "devDependencies": {
+        "prettier": "^3.3.3"
+    }
+}

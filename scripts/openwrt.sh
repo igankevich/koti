@@ -17,7 +17,7 @@ mkdir -p "$workdir"/var/lock
 cat >"$workdir"/Dockerfile <<'EOF'
 FROM scratch
 COPY . /
-RUN opkg update && opkg install iptables iptables-zz-legacy bind-dig tcpdump vim-fuller luci rsync unbound-daemon chrony-nts ntpdate
+RUN opkg update && opkg install iptables iptables-zz-legacy bind-dig tcpdump vim-fuller luci rsync unbound-daemon chrony-nts ntpdate luci-app-ddns wireguard-tools luci-proto-wireguard qrencode
 CMD ["/bin/sh"]
 EOF
 docker build --tag "$image" "$workdir"
