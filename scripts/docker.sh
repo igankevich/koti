@@ -20,6 +20,7 @@ wan_subnet=10.75.0.0/16
 container=koti
 openwrt_version=23.05.4
 image=koti/openwrt-rootfs:"$openwrt_version"
+image_client=koti/ubuntu-client:latest
 case "$1" in
 client)
     exec docker run \
@@ -34,15 +35,15 @@ client)
         --volume "$PWD":/src \
         --entrypoint /src/scripts/docker-entrypoint-client.sh \
         -it \
-        "$image" \
-        /bin/sh -l
+        "$image_client" \
+        /bin/bash -l
     ;;
 router | *)
     cleanup
     trap cleanup EXIT
     docker network create --subnet="$lan_subnet" "$lan" >/dev/null
     docker network create --subnet="$wan_subnet" "$wan" >/dev/null
-    mkdir -p .root
+    npm run build
     docker create \
         --rm \
         --cap-add NET_ADMIN \

@@ -1,8 +1,13 @@
 {
     "scripts": {
-        "prettier": "prettier --config .prettierrc --write luci-app-koti/ package.json"
+        "prettier": "prettier --config .prettierrc --write luci-app-koti/ package.json",
+        "build": "browserify -r qrcode -o luci-app-koti/htdocs/luci-static/resources/bundle.js"
     },
     "devDependencies": {
         "prettier": "^3.3.3"
+    },
+    "dependencies": {
+        "browserify": "^17.0.0",
+        "qrcode": "^1.5.4"
     }
 }

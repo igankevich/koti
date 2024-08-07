@@ -4,6 +4,7 @@
         "read": {
             "ubus": {
                 "luci.koti": [
+                    "wgDump",
                     "wgNewServer",
                     "wgNewClient"
                 ]
