@@ -1,7 +1,5 @@
 #!/bin/sh
 
-uci -q delete ucitrack.@koti[-1] || true
-
 touch /etc/config/koti
 uci batch <<EOF
 set koti.dnssec=dnssec
@@ -14,6 +12,12 @@ add_list koti.nts.server=nts.netnod.se
 set koti.main=main
 set koti.main.unbound_port=1053
 add_list koti.dot.zone=fwd_quad9_dns
+set koti.lan=iprange
+set koti.lan.start=50
+set koti.lan.limit=100
+set koti.wg=iprange
+set koti.wg.start=151
+set koti.wg.limit=100
 commit koti
 EOF
 
