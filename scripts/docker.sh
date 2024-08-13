@@ -21,6 +21,7 @@ container=koti
 openwrt_version=23.05.4
 image=koti/openwrt-rootfs:"$openwrt_version"
 image_client=koti/ubuntu-client:latest
+image_forwarder=koti/forwarder:latest
 case "$1" in
 client)
     exec docker run \
@@ -36,6 +37,35 @@ client)
         --entrypoint /src/scripts/docker-entrypoint-client.sh \
         -it \
         "$image_client" \
+        /bin/bash -l
+    ;;
+rust)
+    exec docker run \
+        --rm \
+        --cap-add NET_ADMIN \
+        --cap-add SYS_ADMIN \
+        --cap-add SYS_TIME \
+        --security-opt seccomp=unconfined \
+        --network "$lan" \
+        --ip 10.107.1.3 \
+        --name "$container"-rust \
+        --volume "$PWD":/src \
+        -it \
+        "rust:1.80.1"
+    ;;
+forwarder)
+    exec docker run \
+        --rm \
+        --cap-add NET_ADMIN \
+        --cap-add SYS_ADMIN \
+        --security-opt seccomp=unconfined \
+        --network "$wan" \
+        --ip 10.75.2.1 \
+        --name "$container"-forwarder \
+        --volume "$PWD":/src \
+        --entrypoint /src/scripts/docker-entrypoint-forwarder.sh \
+        -it \
+        "$image_forwarder" \
         /bin/bash -l
     ;;
 router | *)

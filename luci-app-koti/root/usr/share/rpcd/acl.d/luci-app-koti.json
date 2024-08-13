@@ -6,7 +6,8 @@
                 "luci.koti": [
                     "wgDump",
                     "wgNewServer",
-                    "wgNewClient"
+                    "wgNewClient",
+                    "wgNewForwarder"
                 ]
             },
             "uci": ["koti"]

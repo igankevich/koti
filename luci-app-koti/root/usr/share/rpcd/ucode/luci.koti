@@ -29,8 +29,8 @@ function notifyConfigChange(config) {
     const message = {
         type: 'config.change',
         data: {
-            package: config,
-        },
+            package: config
+        }
     };
     exec("ubus call service event '" + message + "'");
 }
@@ -119,7 +119,7 @@ function newPeerAddress(oldIpaddrs) {
     return null;
 }
 
-function addClient(uci, name, publicKey, presharedKey) {
+function addClient(uci, name, publicKey, presharedKey, description) {
     uci.load('network');
     const oldIpaddrs = getAllIpaddrs(uci, name);
     const ipaddr = newPeerAddress(oldIpaddrs);
@@ -127,13 +127,33 @@ function addClient(uci, name, publicKey, presharedKey) {
     uci.set('network', client, 'public_key', publicKey);
     uci.set('network', client, 'preshared_key', presharedKey);
     uci.set('network', client, 'allowed_ips', [ipaddr]);
-    uci.set('network', client, 'description', 'TODO');
+    uci.set('network', client, 'description', 'client');
     uci.set('network', client, 'route_allowed_ips', 1);
     uci.set('network', client, 'persistent_keepalive', PERSISTENT_KEEPALIVE);
     uci.commit('network');
     notifyConfigChange('network');
     system(`ifup ${name}`);
     return ipaddr;
+}
+
+function addForwarder(uci, name, ipaddr, publicKey) {
+    uci.load('network');
+    const port = int(uci.get('network', 'koti', 'listen_port'));
+    const client = uci.add('network', `wireguard_${name}`);
+    uci.set('network', client, 'public_key', publicKey);
+    uci.set('network', client, 'allowed_ips', ['0.0.0.0/32', '::/128']);
+    uci.set('network', client, 'description', 'forwarder');
+    uci.set('network', client, 'route_allowed_ips', 1);
+    uci.set('network', client, 'persistent_keepalive', PERSISTENT_KEEPALIVE);
+    uci.set('network', client, 'endpoint_host', ipaddr);
+    uci.set('network', client, 'endpoint_port', port);
+    uci.commit('network');
+    notifyConfigChange('network');
+    system(`ifup ${name}`);
+    uci.load('koti');
+    uci.set('koti', 'main', 'forwarder_ipaddr', ipaddr);
+    uci.set('koti', 'main', 'forwarder_port', port + 1);
+    uci.commit('koti');
 }
 
 function getActualIpAddress(uci) {
@@ -143,12 +163,26 @@ function getActualIpAddress(uci) {
 
 function getActualPort(uci) {
     uci.load('network');
-    return uci.get('network', 'koti', 'listen_port');
+    return int(uci.get('network', 'koti', 'listen_port'));
 }
 
-function generateClientConfig(uci, privateKey, publicKey, presharedKey, ipaddr) {
+function getForwarderIpaddr() {
+    const uci = cursor();
+    uci.load('koti');
+    return uci.get('koti', 'main', 'forwarder_ipaddr');
+}
+
+function generateClientConfig(
+    uci,
+    privateKey,
+    routerPublicKey,
+    presharedKey,
+    ipaddr
+) {
     const kotiIpaddr = getActualIpAddress(uci);
     const kotiPort = getActualPort(uci);
+    const forwarderPort = kotiPort + 1;
+    const forwarderIpaddr = getForwarderIpaddr();
     let lines = [
         '[Interface]',
         `Address = ${ipaddr}`,
@@ -156,12 +190,60 @@ function generateClientConfig(uci, privateKey, publicKey, presharedKey, ipaddr) 
         `DNS = ${kotiIpaddr}`,
         '',
         '[Peer]',
-        `PublicKey = ${publicKey}`,
+        `PublicKey = ${routerPublicKey}`,
         `PresharedKey = ${presharedKey}`,
         `PersistentKeepalive = ${PERSISTENT_KEEPALIVE}`,
-        `Endpoint = ${kotiIpaddr}:${kotiPort}`,
+        `Endpoint = ${forwarderIpaddr}:${forwarderPort}`,
         `AllowedIPs = 0.0.0.0/0, ::/0`,
+        ''
+    ];
+    return join('\n', lines);
+}
+
+function generateForwarderConfig(port, privateKey, publicKey) {
+    let lines = [
+        "cat >/usr/libexec/koti.sh << 'EOF'",
+        '#!/bin/sh',
+        'set -e',
+        'echo 1 > /proc/sys/net/ipv4/ip_forward',
+        'ip link add dev koti type wireguard 2>/dev/null || true',
+        'ip link set dev koti up',
+        'ip route flush dev koti',
+        'wg syncconf koti /etc/koti.conf',
+        'endpoint="$(wg show koti endpoints | cut -f2)"',
+        'if test "$endpoint" = "(none)"; then',
+        '    exit 1',
+        'fi',
+        `port=${port + 1}`,
+        'iptables -t nat -D PREROUTING -j koti 2>/dev/null || true',
+        'iptables -t nat -F koti 2>/dev/null || true',
+        'iptables -t nat -X koti 2>/dev/null || true',
+        'iptables -t nat -N koti',
+        'iptables -t nat -A koti -p udp --dport "$port" -j DNAT --to-destination "$endpoint"',
+        'iptables -t nat -A PREROUTING -j koti',
+        'EOF',
+        'chmod +x /usr/libexec/koti.sh',
+        'cat >/etc/koti.conf << EOF',
+        '[Interface]',
+        `ListenPort = ${port}`,
+        `PrivateKey = ${privateKey}`,
         '',
+        '[Peer]',
+        `PublicKey = ${publicKey}`,
+        `PersistentKeepalive = ${PERSISTENT_KEEPALIVE}`,
+        `AllowedIPs = 0.0.0.0/32, ::/32`,
+        'EOF',
+        'crontab - << EOF',
+        '@reboot root /usr/libexec/koti.sh',
+        '@hourly root /usr/libexec/koti.sh',
+        'EOF',
+        'for _ in 1 2 3 4 5 6 7 8 9 10; do',
+        '    if /usr/libexec/koti.sh; then',
+        '        break',
+        '    fi',
+        '    sleep 1',
+        'done',
+        ''
     ];
     return join('\n', lines);
 }
@@ -204,7 +286,7 @@ function getWireguardNodes(name) {
             allowedIps: values[3],
             latestHandshake: int(values[4]),
             transferRx: rx,
-            transferTx: tx,
+            transferTx: tx
         });
     }
     if (length(nodes) != 0) {
@@ -218,11 +300,18 @@ function randomPort() {
     return randomNumber(MIN_PORT, MAX_PORT);
 }
 
+function getRouterPublicKey() {
+    return split(exec(`wg show ${NAME} public-key`), '\n')[0];
+}
+
 const methods = {
     wgDump: {
         call: function (request) {
-            return { nodes: getWireguardNodes(NAME) };
-        },
+            return {
+                nodes: getWireguardNodes(NAME),
+                forwarderIpaddr: getForwarderIpaddr()
+            };
+        }
     },
     wgNewServer: {
         call: function (request) {
@@ -236,9 +325,9 @@ const methods = {
             addToFirewall(uci, NAME, port);
             return {
                 port: port,
-                publicKey: publicKey,
+                publicKey: publicKey
             };
-        },
+        }
     },
     wgNewClient: {
         call: function () {
@@ -247,12 +336,39 @@ const methods = {
             const presharedKey = exec('wg genpsk');
             const uci = cursor();
             const ipaddr = addClient(uci, NAME, publicKey, presharedKey);
-            const config = generateClientConfig(uci, privateKey, publicKey, presharedKey, ipaddr);
+            const config = generateClientConfig(
+                uci,
+                privateKey,
+                getRouterPublicKey(),
+                presharedKey,
+                ipaddr
+            );
             return {
-                config: config,
+                config: config
             };
-        },
+        }
     },
+    wgNewForwarder: {
+        args: {
+            ipaddr: '0.0.0.0'
+        },
+        call: function (request) {
+            const ipaddr = request.args.ipaddr;
+            const privateKey = exec('wg genkey');
+            const publicKey = execWithInput('wg pubkey', privateKey);
+            const uci = cursor();
+            addForwarder(uci, NAME, ipaddr, publicKey);
+            const kotiPort = getActualPort(uci);
+            const config = generateForwarderConfig(
+                kotiPort,
+                privateKey,
+                getRouterPublicKey()
+            );
+            return {
+                config: config
+            };
+        }
+    }
 };
 
 return { 'luci.koti': methods };

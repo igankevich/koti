@@ -16,16 +16,21 @@ if (document.getElementById('koti-bundle') == null) {
 const rpcs = {
     newServer: rpc.declare({
         object: 'luci.koti',
-        method: 'wgNewServer',
+        method: 'wgNewServer'
     }),
     newClient: rpc.declare({
         object: 'luci.koti',
-        method: 'wgNewClient',
+        method: 'wgNewClient'
+    }),
+    newForwarder: rpc.declare({
+        object: 'luci.koti',
+        method: 'wgNewForwarder',
+        params: ['ipaddr']
     }),
     dump: rpc.declare({
         object: 'luci.koti',
-        method: 'wgDump',
-    }),
+        method: 'wgDump'
+    })
 };
 
 async function newServer() {
@@ -36,7 +41,16 @@ async function newServer() {
 async function newClient() {
     const response = await rpcs.newClient();
     updateClientConfig(response.config);
-    await updateQRcode(response.config);
+    updateQRcode(response.config);
+    await updateWireguardNodes();
+}
+
+async function newForwarder() {
+    const ipaddr = document.getElementById('forwarderIpaddr').value;
+    console.log(ipaddr);
+    const response = await rpcs.newForwarder(ipaddr);
+    updateClientConfig(response.config);
+    resetQRcode();
     await updateWireguardNodes();
 }
 
@@ -49,8 +63,8 @@ function renderWireguardNodes(nodes) {
                 E('th', { class: 'th' }, ['IP']),
                 E('th', { class: 'th' }, ['Latest handshake']),
                 E('th', { class: 'th' }, ['Rx']),
-                E('th', { class: 'th' }, ['Tx']),
-            ]),
+                E('th', { class: 'th' }, ['Tx'])
+            ])
         );
         for (const node of nodes) {
             const allowedIps =
@@ -63,8 +77,8 @@ function renderWireguardNodes(nodes) {
                     E('td', { class: 'td' }, [allowedIps || '']),
                     E('td', { class: 'td' }, [node.latestHandshake || '']),
                     E('td', { class: 'td' }, [node.transferRx || '']),
-                    E('td', { class: 'td' }, [node.transferTx || '']),
-                ]),
+                    E('td', { class: 'td' }, [node.transferTx || ''])
+                ])
             );
         }
     }
@@ -107,6 +121,14 @@ function updateClientConfig(config) {
     wgConfig.innerText = config;
 }
 
+function resetQRcode() {
+    const wgQRcode = document.getElementById('wgQRcode');
+    if (wgQRcode == null) {
+        return;
+    }
+    wgQRcode.innerHTML = '';
+}
+
 function updateQRcode(config) {
     const wgQRcode = document.getElementById('wgQRcode');
     if (wgQRcode == null) {
@@ -116,11 +138,11 @@ function updateQRcode(config) {
         config,
         {
             type: 'svg',
-            errorCorrectionLevel: 'H',
+            errorCorrectionLevel: 'H'
         },
         (err, string) => {
             wgQRcode.innerHTML = string;
-        },
+        }
     );
 }
 
@@ -136,23 +158,43 @@ return view.extend({
                 'button',
                 {
                     class: 'btn',
-                    click: newServer,
+                    click: newServer
                 },
-                [_('New server')],
+                [_('New server')]
             ),
             E(
                 'button',
                 {
                     class: 'btn',
-                    click: newClient,
+                    click: newClient
                 },
-                [_('New client')],
+                [_('New client')]
             ),
+            E('div', {}, [
+                E('label', {}, [_('Forwarder IP address')]),
+                E(
+                    'input',
+                    {
+                        id: 'forwarderIpaddr',
+                        type: 'text',
+                        value: data.forwarderIpaddr || ''
+                    },
+                    []
+                ),
+                E(
+                    'button',
+                    {
+                        class: 'btn',
+                        click: newForwarder
+                    },
+                    [_('New forwarder')]
+                )
+            ]),
             E('pre', { class: 'pre', id: 'wgConfig' }, []),
-            E('div', { id: 'wgQRcode', style: 'max-width: 256px' }, []),
+            E('div', { id: 'wgQRcode', style: 'max-width: 256px' }, [])
         ]);
     },
     handleSave: null,
     handleSaveApply: null,
-    handleReset: null,
+    handleReset: null
 });

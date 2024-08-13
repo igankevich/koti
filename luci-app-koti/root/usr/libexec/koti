@@ -123,6 +123,10 @@ configure_dhcp() {
     # set ip ranges
     uci set dhcp.lan.start="$lan_start"
     uci set dhcp.lan.limit="$lan_limit"
+    # standard local domain
+    domain=home.arpa
+    uci set dhcp.@dnsmasq[0].local=/$domain/
+    uci set dhcp.@dnsmasq[0].domain=$domain
 }
 
 add_unbound_zone() {
