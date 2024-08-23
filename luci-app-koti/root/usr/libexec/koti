@@ -127,6 +127,7 @@ configure_dhcp() {
     domain=home.arpa
     uci set dhcp.@dnsmasq[0].local=/$domain/
     uci set dhcp.@dnsmasq[0].domain=$domain
+    uci set system.@system[0].hostname=koti
 }
 
 add_unbound_zone() {
@@ -170,6 +171,37 @@ set unbound.ub_main.domain_type=refuse
 EOF
 }
 
+configure_cron() {
+    if test -e /etc/crontabs/root; then
+        sed -i -e '/KOTI/d' /etc/crontabs/root
+    fi
+    cat >/etc/crontabs/root <<'EOF'
+0 * * * * wgx-hub publish koti $(uci get koti.main.relay_public_key) # KOTI
+EOF
+    printf "koti\n" >>/etc/crontabs/cron.update
+    /etc/init.d/cron start
+}
+
+configure_wireguard() {
+    lan="$(uci get network.lan.device)"
+    wan="$(uci get network.wan.device)"
+    nft -f- <<EOF
+table inet koti {
+    chain postrouting {
+        type nat hook postrouting priority srcnat;
+        policy accept;
+        ip saddr $local_networks oifname "$wan" masquerade
+    }
+    chain forward {
+        type filter hook forward priority filter;
+        policy drop;
+        iifname "koti" oifname { "$lan", "$wan", "koti" } accept
+        iifname { "$lan", "$wan", "koti" } oifname "koti" accept
+    }
+}
+EOF
+}
+
 change_config() {
     config="$1"
     changes="$(uci changes "$config")"
@@ -208,6 +240,8 @@ dot
 dnssec
 nts
 configure_dhcp
+configure_cron
+configure_wireguard
 for config in dhcp unbound chrony system; do
     change_config "$config"
 done

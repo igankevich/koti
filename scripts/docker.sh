@@ -83,6 +83,7 @@ router | *)
         --network "$lan" \
         --ip 10.107.1.1 \
         --name "$container" \
+        --hostname "$container" \
         --volume "$PWD":/src \
         --entrypoint /src/scripts/docker-entrypoint-router.sh \
         "$image" \

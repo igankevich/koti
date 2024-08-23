@@ -22,10 +22,10 @@ const rpcs = {
         object: 'luci.koti',
         method: 'wgNewClient'
     }),
-    newForwarder: rpc.declare({
+    newRelay: rpc.declare({
         object: 'luci.koti',
-        method: 'wgNewForwarder',
-        params: ['ipaddr']
+        method: 'wgNewRelay',
+        params: ['endpoint']
     }),
     dump: rpc.declare({
         object: 'luci.koti',
@@ -45,12 +45,11 @@ async function newClient() {
     await updateWireguardNodes();
 }
 
-async function newForwarder() {
-    const ipaddr = document.getElementById('forwarderIpaddr').value;
+async function newRelay() {
+    const ipaddr = document.getElementById('relayEndpoint').value;
     console.log(ipaddr);
-    const response = await rpcs.newForwarder(ipaddr);
-    updateClientConfig(response.config);
-    resetQRcode();
+    const response = await rpcs.newRelay(ipaddr);
+    console.log(response.publicKey);
     await updateWireguardNodes();
 }
 
@@ -171,13 +170,13 @@ return view.extend({
                 [_('New client')]
             ),
             E('div', {}, [
-                E('label', {}, [_('Forwarder IP address')]),
+                E('label', {}, [_('Relay endpoint')]),
                 E(
                     'input',
                     {
-                        id: 'forwarderIpaddr',
+                        id: 'relayEndpoint',
                         type: 'text',
-                        value: data.forwarderIpaddr || ''
+                        value: data.relayEndpoint || 'relay.igankevich.com:1622'
                     },
                     []
                 ),
@@ -185,9 +184,9 @@ return view.extend({
                     'button',
                     {
                         class: 'btn',
-                        click: newForwarder
+                        click: newRelay
                     },
-                    [_('New forwarder')]
+                    [_('New relay')]
                 )
             ]),
             E('pre', { class: 'pre', id: 'wgConfig' }, []),

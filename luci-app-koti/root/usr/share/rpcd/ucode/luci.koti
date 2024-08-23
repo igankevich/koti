@@ -136,12 +136,14 @@ function addClient(uci, name, publicKey, presharedKey, description) {
     return ipaddr;
 }
 
-function addForwarder(uci, name, ipaddr, publicKey) {
+function addWireguardRelay(name, ipaddr, port, publicKey) {
+    const oldIpaddrs = getAllIpaddrs(uci, name);
+    const innerIpaddr = newPeerAddress(oldIpaddrs);
+    const uci = cursor();
     uci.load('network');
-    const port = int(uci.get('network', 'koti', 'listen_port'));
     const client = uci.add('network', `wireguard_${name}`);
     uci.set('network', client, 'public_key', publicKey);
-    uci.set('network', client, 'allowed_ips', ['0.0.0.0/32', '::/128']);
+    uci.set('network', client, 'allowed_ips', [innerIpaddr]);
     uci.set('network', client, 'description', 'forwarder');
     uci.set('network', client, 'route_allowed_ips', 1);
     uci.set('network', client, 'persistent_keepalive', PERSISTENT_KEEPALIVE);
@@ -151,8 +153,9 @@ function addForwarder(uci, name, ipaddr, publicKey) {
     notifyConfigChange('network');
     system(`ifup ${name}`);
     uci.load('koti');
-    uci.set('koti', 'main', 'forwarder_ipaddr', ipaddr);
-    uci.set('koti', 'main', 'forwarder_port', port + 1);
+    uci.set('koti', 'main', 'relay_host', ipaddr);
+    uci.set('koti', 'main', 'relay_port', port);
+    uci.set('koti', 'main', 'relay_public_key', publicKey);
     uci.commit('koti');
 }
 
@@ -166,10 +169,22 @@ function getActualPort(uci) {
     return int(uci.get('network', 'koti', 'listen_port'));
 }
 
-function getForwarderIpaddr() {
+function getRelayHost() {
     const uci = cursor();
     uci.load('koti');
-    return uci.get('koti', 'main', 'forwarder_ipaddr');
+    return uci.get('koti', 'main', 'relay_host');
+}
+
+function getRelayPort() {
+    const uci = cursor();
+    uci.load('koti');
+    return uci.get('koti', 'main', 'relay_port');
+}
+
+function getRelayPublicKey() {
+    const uci = cursor();
+    uci.load('koti');
+    return uci.get('koti', 'main', 'relay_public_key');
 }
 
 function generateClientConfig(
@@ -181,8 +196,9 @@ function generateClientConfig(
 ) {
     const kotiIpaddr = getActualIpAddress(uci);
     const kotiPort = getActualPort(uci);
-    const forwarderPort = kotiPort + 1;
-    const forwarderIpaddr = getForwarderIpaddr();
+    const relayHost = getRelayHost();
+    const relayPort = getRelayPort();
+    const relayPublicKey = getRelayPublicKey();
     let lines = [
         '[Interface]',
         `Address = ${ipaddr}`,
@@ -192,57 +208,14 @@ function generateClientConfig(
         '[Peer]',
         `PublicKey = ${routerPublicKey}`,
         `PresharedKey = ${presharedKey}`,
-        `PersistentKeepalive = ${PERSISTENT_KEEPALIVE}`,
-        `Endpoint = ${forwarderIpaddr}:${forwarderPort}`,
+        `Endpoint = ${relayHost}:${relayPort}`,
         `AllowedIPs = 0.0.0.0/0, ::/0`,
-        ''
-    ];
-    return join('\n', lines);
-}
-
-function generateForwarderConfig(port, privateKey, publicKey) {
-    let lines = [
-        "cat >/usr/libexec/koti.sh << 'EOF'",
-        '#!/bin/sh',
-        'set -e',
-        'echo 1 > /proc/sys/net/ipv4/ip_forward',
-        'ip link add dev koti type wireguard 2>/dev/null || true',
-        'ip link set dev koti up',
-        'ip route flush dev koti',
-        'wg syncconf koti /etc/koti.conf',
-        'endpoint="$(wg show koti endpoints | cut -f2)"',
-        'if test "$endpoint" = "(none)"; then',
-        '    exit 1',
-        'fi',
-        `port=${port + 1}`,
-        'iptables -t nat -D PREROUTING -j koti 2>/dev/null || true',
-        'iptables -t nat -F koti 2>/dev/null || true',
-        'iptables -t nat -X koti 2>/dev/null || true',
-        'iptables -t nat -N koti',
-        'iptables -t nat -A koti -p udp --dport "$port" -j DNAT --to-destination "$endpoint"',
-        'iptables -t nat -A PREROUTING -j koti',
-        'EOF',
-        'chmod +x /usr/libexec/koti.sh',
-        'cat >/etc/koti.conf << EOF',
-        '[Interface]',
-        `ListenPort = ${port}`,
-        `PrivateKey = ${privateKey}`,
         '',
         '[Peer]',
-        `PublicKey = ${publicKey}`,
+        `PublicKey = ${relayPublicKey}`,
         `PersistentKeepalive = ${PERSISTENT_KEEPALIVE}`,
-        `AllowedIPs = 0.0.0.0/32, ::/32`,
-        'EOF',
-        'crontab - << EOF',
-        '@reboot root /usr/libexec/koti.sh',
-        '@hourly root /usr/libexec/koti.sh',
-        'EOF',
-        'for _ in 1 2 3 4 5 6 7 8 9 10; do',
-        '    if /usr/libexec/koti.sh; then',
-        '        break',
-        '    fi',
-        '    sleep 1',
-        'done',
+        `Endpoint = ${relayHost}:${relayPort}`,
+        `AllowedIPs =`,
         ''
     ];
     return join('\n', lines);
@@ -304,12 +277,31 @@ function getRouterPublicKey() {
     return split(exec(`wg show ${NAME} public-key`), '\n')[0];
 }
 
+function relayEndpointToHostAndPort(endpoint) {
+    let i = rindex(endpoint, ':');
+    if (i == -1) {
+        return [endpoint, '8787'];
+    }
+    return [substr(endpoint, 0, i), substr(endpoint, i+1)];
+}
+
+function queryRelayPublicKey(host, port) {
+    return exec(`wgx-hub public-key ${host}:${port}`);
+}
+
+function sendPeersToWireguardRelay() {
+    const relayPublicKey = getRelayPublicKey();
+    return exec(`wgx-hub publish ${NAME} ${relayPublicKey}`);
+}
+
 const methods = {
     wgDump: {
         call: function (request) {
             return {
                 nodes: getWireguardNodes(NAME),
-                forwarderIpaddr: getForwarderIpaddr()
+                relayHost: getRelayHost(),
+                relayPort: getRelayPort(),
+                relayPublicKey: getRelayPublicKey()
             };
         }
     },
@@ -336,6 +328,7 @@ const methods = {
             const presharedKey = exec('wg genpsk');
             const uci = cursor();
             const ipaddr = addClient(uci, NAME, publicKey, presharedKey);
+            sendPeersToWireguardRelay();
             const config = generateClientConfig(
                 uci,
                 privateKey,
@@ -348,24 +341,18 @@ const methods = {
             };
         }
     },
-    wgNewForwarder: {
+    wgNewRelay: {
         args: {
-            ipaddr: '0.0.0.0'
+            endpoint: 'host:port'
         },
         call: function (request) {
-            const ipaddr = request.args.ipaddr;
-            const privateKey = exec('wg genkey');
-            const publicKey = execWithInput('wg pubkey', privateKey);
-            const uci = cursor();
-            addForwarder(uci, NAME, ipaddr, publicKey);
-            const kotiPort = getActualPort(uci);
-            const config = generateForwarderConfig(
-                kotiPort,
-                privateKey,
-                getRouterPublicKey()
-            );
+            const endpoint = request.args.endpoint;
+            const hostPort = relayEndpointToHostAndPort(endpoint);
+            const publicKey = queryRelayPublicKey(hostPort[0], hostPort[1]);
+            addWireguardRelay(NAME, hostPort[0], hostPort[1], publicKey);
+            sendPeersToWireguardRelay();
             return {
-                config: config
+                publicKey: publicKey
             };
         }
     }

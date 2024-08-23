@@ -7,7 +7,7 @@
                     "wgDump",
                     "wgNewServer",
                     "wgNewClient",
-                    "wgNewForwarder"
+                    "wgNewRelay"
                 ]
             },
             "uci": ["koti"]

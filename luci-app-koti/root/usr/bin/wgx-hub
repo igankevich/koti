@@ -1,0 +1,79 @@
+#!/usr/bin/lua
+
+local socket = require("socket")
+local mime = require("mime")
+
+local printUsage = function ()
+    io.stdout:write('usage: wgx-hub publish INTERFACE PUBLIC-KEY\n')
+    io.stdout:write('       wgx-hub public-key IP:PORT\n')
+end
+
+if arg[1] == 'publish' then
+    local name = arg[2]
+    if name == nil then
+        printUsage()
+        os.exit(1)
+    end
+    local relayPublicKey = arg[3]
+    if relayPublicKey == nil then
+        printUsage()
+        os.exit(1)
+    end
+    local peerPublicKeys = {}
+    local relayInnerIpaddr = ''
+    local handle = io.popen(string.format("wg show %s allowed-ips", name))
+    local output = handle:read("*all")
+    for line in output:gmatch("[^\n]+") do
+        local values = {}
+        for value in line:gmatch("[^\t]+") do
+            table.insert(values, value)
+        end
+        local publicKey = values[1]
+        local allowedIps = values[2]
+        if not (publicKey == relayPublicKey) then
+            table.insert(peerPublicKeys, publicKey)
+        else
+            local i = string.find(allowedIps, '/')
+            if i == nil then
+                relayInnerIpaddr = allowedIps
+            else
+                relayInnerIpaddr = string.sub(allowedIps, 0, i-1)
+            end
+        end
+    end
+    handle:close()
+    print(relayInnerIpaddr)
+    local udp = socket.udp()
+    math.randomseed(os.time())
+    local data = string.char(math.random(0, 255), 0, 0, 0, 1)
+    for i, publicKey in pairs(peerPublicKeys) do
+        data = data .. mime.unb64(publicKey)
+    end
+    udp:sendto(data, relayInnerIpaddr, 8787)
+elseif arg[1] == 'public-key' then
+    local endpoint = arg[2]
+    if endpoint == nil then
+        printUsage()
+        os.exit(1)
+    end
+    local i = endpoint:reverse():find(':')
+    local host, port
+    if not (i == nil) then
+        host = endpoint:sub(0, #endpoint - i)
+        port = tonumber(endpoint:sub(#endpoint - i + 2))
+    else
+        host = endpoint
+        port = 8787
+    end
+    local ip = socket.dns.toip(host)
+    local udp = socket.udp()
+    udp:sendto(string.char(49), ip, port)
+    local publicKey = mime.b64(udp:receive())
+    print(publicKey)
+elseif arg[1] == nil then
+    printUsage()
+    os.exit(1)
+else
+    io.stderr:write(string.format('unknown subcommand: %s\n', arg[1]))
+    os.exit(1)
+end
