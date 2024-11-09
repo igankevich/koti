@@ -1,0 +1,361 @@
+import { cursor } from 'uci';
+import { popen, readfile, unlink } from 'fs';
+import { rand } from 'math';
+
+const NAME = 'koti';
+const PERSISTENT_KEEPALIVE = 23;
+const MIN_PORT = 7000;
+const MAX_PORT = 9999;
+
+function exec(command) {
+    const proc = popen(command);
+    const output = proc.read('all');
+    proc.close();
+    return trim(output);
+}
+
+function execWithInput(command, input) {
+    const filename = `/tmp/.exec-${rand()}`;
+    const proc = popen(command + ' > ' + filename, 'w');
+    proc.write(input);
+    proc.flush();
+    proc.close();
+    const output = readfile(filename);
+    unlink(filename);
+    return trim(output);
+}
+
+function notifyConfigChange(config) {
+    const message = {
+        type: 'config.change',
+        data: {
+            package: config
+        }
+    };
+    exec("ubus call service event '" + message + "'");
+}
+
+function addToFirewall(uci, name, port) {
+    uci.load('firewall');
+    // zone
+    uci.foreach('firewall', 'zone', (zone) => {
+        if (zone.name == name) {
+            uci.delete('firewall', zone['.name']);
+        }
+    });
+    const zone = uci.add('firewall', 'zone');
+    uci.set('firewall', zone, 'name', name);
+    uci.set('firewall', zone, 'network', [name]);
+    uci.set('firewall', zone, 'input', 'ACCEPT');
+    uci.set('firewall', zone, 'output', 'ACCEPT');
+    uci.set('firewall', zone, 'forward', 'ACCEPT');
+    // rule
+    uci.delete('firewall', name);
+    uci.set('firewall', name, 'rule');
+    uci.set('firewall', name, 'name', 'Allow-WireGuard-' + name);
+    uci.set('firewall', name, 'src', 'wan');
+    uci.set('firewall', name, 'dest_port', port);
+    uci.set('firewall', name, 'proto', 'udp');
+    uci.set('firewall', name, 'target', 'ACCEPT');
+    uci.commit('firewall');
+    notifyConfigChange('firewall');
+}
+
+function addNetwork(uci, name, port, privateKey, ipaddr) {
+    uci.load('network');
+    uci.delete('network', name);
+    uci.set('network', name, 'interface');
+    uci.set('network', name, 'proto', 'wireguard');
+    uci.set('network', name, 'private_key', privateKey);
+    uci.set('network', name, 'listen_port', port);
+    uci.set('network', name, 'addresses', [ipaddr]);
+    uci.commit('network');
+    notifyConfigChange('network');
+}
+
+function getAllIpaddrs(uci, name) {
+    const ipaddrs = [];
+    const uci = cursor();
+    uci.load('network');
+    uci.foreach('network', `wireguard_${name}`, (client) => {
+        if (exists(client, 'allowed_ips')) {
+            push(ipaddrs, ...client.allowed_ips);
+        }
+    });
+    return ipaddrs;
+}
+
+function randomNumber(min, max) {
+    return min + (rand() % (max + 1 - min));
+}
+
+function offsetToIpAddr(offset) {
+    const uci = cursor();
+    uci.load('network');
+    const lanIpAddr = uci.get('network', 'lan', 'ipaddr');
+    const lanNetmask = uci.get('network', 'lan', 'netmask');
+    const output = exec(`ipcalc.sh ${lanIpAddr} ${lanNetmask} ${offset}`);
+    for (line in split(output, '\n')) {
+        const keyValue = split(line, '=');
+        if (length(keyValue) >= 2 && keyValue[0] == 'START') {
+            return keyValue[1];
+        }
+    }
+    return null;
+}
+
+function newPeerAddress(oldIpaddrs) {
+    const uci = cursor();
+    uci.load('koti');
+    const wgStart = int(uci.get('koti', 'wg', 'start'));
+    const wgLimit = int(uci.get('koti', 'wg', 'limit'));
+    while (true) {
+        const offset = randomNumber(wgStart + 1, wgStart + wgLimit);
+        const ipaddr = offsetToIpAddr(offset) + '/32';
+        if (index(oldIpaddrs, ipaddr) != null) {
+            return ipaddr;
+        }
+    }
+    return null;
+}
+
+function addClient(uci, name, publicKey, presharedKey, description) {
+    uci.load('network');
+    const oldIpaddrs = getAllIpaddrs(uci, name);
+    const ipaddr = newPeerAddress(oldIpaddrs);
+    const client = uci.add('network', `wireguard_${name}`);
+    uci.set('network', client, 'public_key', publicKey);
+    uci.set('network', client, 'preshared_key', presharedKey);
+    uci.set('network', client, 'allowed_ips', [ipaddr]);
+    uci.set('network', client, 'description', 'client');
+    uci.set('network', client, 'route_allowed_ips', 1);
+    uci.set('network', client, 'persistent_keepalive', PERSISTENT_KEEPALIVE);
+    uci.commit('network');
+    notifyConfigChange('network');
+    system(`ifup ${name}`);
+    return ipaddr;
+}
+
+function addWireguardRelay(name, ipaddr, port, publicKey) {
+    const oldIpaddrs = getAllIpaddrs(uci, name);
+    const innerIpaddr = newPeerAddress(oldIpaddrs);
+    const uci = cursor();
+    uci.load('network');
+    const client = uci.add('network', `wireguard_${name}`);
+    uci.set('network', client, 'public_key', publicKey);
+    uci.set('network', client, 'allowed_ips', [innerIpaddr]);
+    uci.set('network', client, 'description', 'forwarder');
+    uci.set('network', client, 'route_allowed_ips', 1);
+    uci.set('network', client, 'persistent_keepalive', PERSISTENT_KEEPALIVE);
+    uci.set('network', client, 'endpoint_host', ipaddr);
+    uci.set('network', client, 'endpoint_port', port);
+    uci.commit('network');
+    notifyConfigChange('network');
+    system(`ifup ${name}`);
+    uci.load('koti');
+    uci.set('koti', 'main', 'relay_host', ipaddr);
+    uci.set('koti', 'main', 'relay_port', port);
+    uci.set('koti', 'main', 'relay_public_key', publicKey);
+    uci.commit('koti');
+}
+
+function getActualIpAddress(uci) {
+    uci.load('network');
+    return join(',', uci.get('network', 'koti', 'addresses'));
+}
+
+function getActualPort(uci) {
+    uci.load('network');
+    return int(uci.get('network', 'koti', 'listen_port'));
+}
+
+function getRelayHost() {
+    const uci = cursor();
+    uci.load('koti');
+    return uci.get('koti', 'main', 'relay_host');
+}
+
+function getRelayPort() {
+    const uci = cursor();
+    uci.load('koti');
+    return uci.get('koti', 'main', 'relay_port');
+}
+
+function getRelayPublicKey() {
+    const uci = cursor();
+    uci.load('koti');
+    return uci.get('koti', 'main', 'relay_public_key');
+}
+
+function generateClientConfig(
+    uci,
+    privateKey,
+    routerPublicKey,
+    presharedKey,
+    ipaddr
+) {
+    const kotiIpaddr = getActualIpAddress(uci);
+    const kotiPort = getActualPort(uci);
+    const relayHost = getRelayHost();
+    const relayPort = getRelayPort();
+    const relayPublicKey = getRelayPublicKey();
+    let lines = [
+        '[Interface]',
+        `Address = ${ipaddr}`,
+        `PrivateKey = ${privateKey}`,
+        `DNS = ${kotiIpaddr}`,
+        '',
+        '[Peer]',
+        `PublicKey = ${routerPublicKey}`,
+        `PresharedKey = ${presharedKey}`,
+        `Endpoint = ${relayHost}:${relayPort}`,
+        `AllowedIPs = 0.0.0.0/0, ::/0`,
+        '',
+        '[Peer]',
+        `PublicKey = ${relayPublicKey}`,
+        `PersistentKeepalive = ${PERSISTENT_KEEPALIVE}`,
+        `Endpoint = ${relayHost}:${relayPort}`,
+        `AllowedIPs =`,
+        ''
+    ];
+    return join('\n', lines);
+}
+
+function getIpAddress(uci) {
+    uci.load('koti');
+    const wgStart = uci.get('koti', 'wg', 'start');
+    return offsetToIpAddr(wgStart);
+}
+
+function getWireguardNodes(name) {
+    const output = exec(`wg show ${name} dump`);
+    const lines = split(output, '\n');
+    const nodes = [];
+    if (length(output) == 0) {
+        return nodes;
+    }
+    if (length(lines) != 0) {
+        const values = split(lines[0], '\t');
+        push(nodes, {
+            publicKey: values[1],
+            listenPort: int(values[2]),
+            transferRx: 0,
+            transferTx: 0,
+            allowedIps: getActualIpAddress(cursor())
+        });
+    }
+    const peers = slice(lines, 1);
+    let totalRx = 0;
+    let totalTx = 0;
+    for (peer in peers) {
+        const values = split(peer, '\t');
+        const rx = int(values[5]);
+        const tx = int(values[6]);
+        totalRx += rx;
+        totalTx += tx;
+        push(nodes, {
+            publicKey: values[0],
+            endpoint: values[2],
+            allowedIps: values[3],
+            latestHandshake: int(values[4]),
+            transferRx: rx,
+            transferTx: tx
+        });
+    }
+    if (length(nodes) != 0) {
+        nodes[0].transferRx = totalRx;
+        nodes[0].transferTx = totalTx;
+    }
+    return nodes;
+}
+
+function randomPort() {
+    return randomNumber(MIN_PORT, MAX_PORT);
+}
+
+function getRouterPublicKey() {
+    return split(exec(`wg show ${NAME} public-key`), '\n')[0];
+}
+
+function relayEndpointToHostAndPort(endpoint) {
+    let i = rindex(endpoint, ':');
+    if (i == -1) {
+        return [endpoint, '8787'];
+    }
+    return [substr(endpoint, 0, i), substr(endpoint, i+1)];
+}
+
+function queryRelayPublicKey(host, port) {
+    return exec(`wgx-hub public-key ${host}:${port}`);
+}
+
+function sendPeersToWireguardRelay() {
+    const relayPublicKey = getRelayPublicKey();
+    return exec(`wgx-hub publish ${NAME} ${relayPublicKey}`);
+}
+
+const methods = {
+    wgDump: {
+        call: function (request) {
+            return {
+                nodes: getWireguardNodes(NAME),
+                relayHost: getRelayHost(),
+                relayPort: getRelayPort(),
+                relayPublicKey: getRelayPublicKey()
+            };
+        }
+    },
+    wgNewServer: {
+        call: function (request) {
+            // https://openwrt.org/docs/guide-user/services/vpn/wireguard/server
+            const uci = cursor();
+            const port = randomPort();
+            const privateKey = exec('wg genkey');
+            const publicKey = execWithInput('wg pubkey', privateKey);
+            const ipaddr = getIpAddress(uci);
+            addNetwork(uci, NAME, port, privateKey, ipaddr);
+            addToFirewall(uci, NAME, port);
+            return {
+                port: port,
+                publicKey: publicKey
+            };
+        }
+    },
+    wgNewClient: {
+        call: function () {
+            const privateKey = exec('wg genkey');
+            const publicKey = execWithInput('wg pubkey', privateKey);
+            const presharedKey = exec('wg genpsk');
+            const uci = cursor();
+            const ipaddr = addClient(uci, NAME, publicKey, presharedKey);
+            sendPeersToWireguardRelay();
+            const config = generateClientConfig(
+                uci,
+                privateKey,
+                getRouterPublicKey(),
+                presharedKey,
+                ipaddr
+            );
+            return {
+                config: config
+            };
+        }
+    },
+    wgNewRelay: {
+        args: {
+            endpoint: 'host:port'
+        },
+        call: function (request) {
+            const endpoint = request.args.endpoint;
+            const hostPort = relayEndpointToHostAndPort(endpoint);
+            const publicKey = queryRelayPublicKey(hostPort[0], hostPort[1]);
+            addWireguardRelay(NAME, hostPort[0], hostPort[1], publicKey);
+            sendPeersToWireguardRelay();
+            return {
+                publicKey: publicKey
+            };
+        }
+    }
+};
+
+return { 'luci.koti': methods };

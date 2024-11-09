@@ -103,6 +103,31 @@ configure_dhcp() {
     done
     uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#$unbound_port"
     uci add_list dhcp.@dnsmasq[0].server="::1#$unbound_port"
+    # delete old options
+    for option in $(uci -q get dhcp.lan.dhcp_option || true); do
+        if expr "$option" : "(1|3|6|42),.*" >/dev/null; then
+            uci delete dhcp.lan.dhcp_option="$option"
+        fi
+    done
+    # 1 - netmask
+    # 3 - gateway
+    # 6 - dns server
+    # 42 - ntp server
+    # https://en.wikipedia.org/wiki/Dynamic_Host_Configuration_Protocol#Options
+    uci -q del_list dhcp.lan.dhcp_option=1,"$lan_netmask" || true
+    uci add_list dhcp.lan.dhcp_option=1,"$lan_netmask"
+    for option in 3 6 42; do
+        uci -q del_list dhcp.lan.dhcp_option="$option","$lan_ipaddr" || true
+        uci add_list dhcp.lan.dhcp_option="$option","$lan_ipaddr"
+    done
+    # set ip ranges
+    uci set dhcp.lan.start="$lan_start"
+    uci set dhcp.lan.limit="$lan_limit"
+    # standard local domain
+    domain=home.arpa
+    uci set dhcp.@dnsmasq[0].local=/$domain/
+    uci set dhcp.@dnsmasq[0].domain=$domain
+    uci set system.@system[0].hostname=koti
 }
 
 add_unbound_zone() {
@@ -146,6 +171,37 @@ set unbound.ub_main.domain_type=refuse
 EOF
 }
 
+configure_cron() {
+    if test -e /etc/crontabs/root; then
+        sed -i -e '/KOTI/d' /etc/crontabs/root
+    fi
+    cat >/etc/crontabs/root <<'EOF'
+0 * * * * wgx-hub publish koti $(uci get koti.main.relay_public_key) # KOTI
+EOF
+    printf "koti\n" >>/etc/crontabs/cron.update
+    /etc/init.d/cron start
+}
+
+configure_wireguard() {
+    lan="$(uci get network.lan.device)"
+    wan="$(uci get network.wan.device)"
+    nft -f- <<EOF
+table inet koti {
+    chain postrouting {
+        type nat hook postrouting priority srcnat;
+        policy accept;
+        ip saddr $local_networks oifname "$wan" masquerade
+    }
+    chain forward {
+        type filter hook forward priority filter;
+        policy drop;
+        iifname "koti" oifname { "$lan", "$wan", "koti" } accept
+        iifname { "$lan", "$wan", "koti" } oifname "koti" accept
+    }
+}
+EOF
+}
+
 change_config() {
     config="$1"
     changes="$(uci changes "$config")"
@@ -166,12 +222,17 @@ change_config() {
 }
 
 set -e
+config_load network
+config_get lan_ipaddr lan ipaddr 192.168.1.1
+config_get lan_netmask lan netmask 255.255.255.0
 config_load koti
 config_get unbound_port main unbound_port 1053
 config_get nextdns_id main nextdns_id
 config_get dnssec_enable dnssec enable 1
 config_get dot_enable dot enable 1
 config_get nts_enable nts enable 1
+config_get lan_start lan start 50
+config_get lan_limit lan limit 100
 koti_undo
 redirect_dns
 configure_unbound
@@ -179,6 +240,8 @@ dot
 dnssec
 nts
 configure_dhcp
+configure_cron
+configure_wireguard
 for config in dhcp unbound chrony system; do
     change_config "$config"
 done
